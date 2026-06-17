@@ -199,7 +199,15 @@ def save_dict_as_parquet_and_csv(
     save_path = path_handler(save_path)
 
     file_path = str(save_path / file_name)
+    print("\nLengths going into DataFrame:")
+    for k, v in dic.items():
+        try:
+            print(k, len(v), type(v))
+        except TypeError:
+            print(k, "scalar", type(v))
+
     quality_metrics_df = pd.DataFrame.from_dict(dic)
+    
     quality_metrics_df.to_parquet(file_path + ".parquet")
     quality_metrics_df.to_csv(file_path + ".csv")
 
@@ -312,6 +320,13 @@ def save_results(
 
     # maxChannels and other arrays all have same size (all templates, including empty ones)
     quality_metrics_save = quality_metrics.copy()
+
+    ###maxChannels doesnt have same size if template numbers arent continuous
+    if "maxChannels" in quality_metrics_save:
+        unique_templates = np.asarray(unique_templates).astype(int)
+        quality_metrics_save["maxChannels"] = np.asarray(
+            quality_metrics_save["maxChannels"]
+        )[unique_templates]
 
     # Add BombCell unit type label to quality metrics (updated when re-running classification)
     quality_metrics_save["bc_unitType"] = unit_type_string
