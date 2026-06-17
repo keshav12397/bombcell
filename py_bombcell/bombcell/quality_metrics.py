@@ -1294,8 +1294,22 @@ def time_chunks_to_keep(
     maxRPVviolationss = param["maxRPVviolations"]
     maxPercSpikesMissing = param["maxPercSpikesMissing"]
 
-    sum_RPV = np.sum(fraction_RPVs, axis=0)
-    use_tauR = np.where(sum_RPV == np.min(sum_RPV))[0][-1] # gives the last index of the tauR which has smallest contamination # CAUGHT BUG was argmax!!
+    sum_RPV = np.nansum(fraction_RPVs, axis=0)
+
+    # Columns where every chunk is NaN should stay invalid, not become 0.
+    all_nan_tauR = np.all(np.isnan(fraction_RPVs), axis=0)
+    sum_RPV[all_nan_tauR] = np.nan
+
+    if np.all(np.isnan(sum_RPV)):
+        # If every tauR is invalid, ignore RPV for chunk selection.
+        use_tauR = fraction_RPVs.shape[1] - 1
+        rpv_ok = np.ones(fraction_RPVs.shape[0], dtype=bool)
+    else:
+        # Use the last tauR index with the lowest summed RPV.
+        use_tauR = np.where(sum_RPV == np.nanmin(sum_RPV))[0][-1]
+        rpv_ok = fraction_RPVs[:, use_tauR] < maxRPVviolationss
+
+
     use_these_times_temp = np.zeros(time_chunks.shape[0] - 1)
 
     use_these_times_temp = np.argwhere(
