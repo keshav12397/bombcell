@@ -14,7 +14,7 @@ except ImportError:
     print("Warning: mtscomp not available. Some raw data formats may not be supported.")
 from scipy.signal import detrend
 from scipy.ndimage import gaussian_filter
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 
 # DEBUG FLAG - set to True to enable debug plots
@@ -803,7 +803,7 @@ def extract_raw_waveforms(
                 save_multiple_raw,
                 template_peak_channels[cid] if template_peak_channels is not None and cid < len(template_peak_channels) else None,
             )
-            for i, cid in tqdm(enumerate(unique_clusters))
+            for i, cid in enumerate(tqdm(unique_clusters, desc="Extracting raw waveforms"))
         )
 
         (raw_waveforms,
