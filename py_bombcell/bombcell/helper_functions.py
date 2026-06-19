@@ -1107,6 +1107,314 @@ def get_all_quality_metrics(
 
     return quality_metrics, runtimes
 
+def makeChunkIdxes(binPath,fs,nChan,chunkSizeSec):
+
+    fileSizeBytes = binPath.stat().st_size
+    nFileSamp = fileSizeBytes//(2*nChan)
+    chunkSamp = int(fs * chunkSizeSec)
+    chunkStarts = np.arange(0, nFileSamp, chunkSamp, dtype=np.int64)
+    chunkStops = np.minimum(chunkStarts + chunkSamp, nFileSamp)
+
+    return chunkStarts,chunkStops
+
+def run_bombcellCHUNKEDALL(ks_dir, save_path, param, chunkSizeSec = 600,save_figures=False, return_figures=False):
+    """
+    KS modifed  the main function to now move in chunks along the recording 
+
+    Parameters
+    ----------
+    ks_dir : string
+        The path to the KiloSort (or equivalent) save directory
+    save_path : string
+        The path to the directory to save the bombcell results
+    param : dict
+        The param dictionary
+    save_figures : bool, optional
+        If True, saves the generated figures to disk, by default False
+    return_figures : bool, optional
+        If True, returns the generated figures, by default False
+
+    Returns
+    -------
+    quality_metrics : dict
+        The quality metrics for each unit
+    param : dict
+        The parameters 
+    unit_type : ndarray
+        The unit classifications as numbers 
+    unit_type_string: ndarray
+        The unit classifications as names
+    figures : dict, optional
+        If return_figures=True, returns dictionary with figure objects:
+        'waveforms_overlay', 'upset_plots', 'histograms'
+    """
+    
+    if param.get("verbose", False):
+        print("🚀 Starting BombCell CHUNKED quality metrics pipeline...")
+        print(f"📁 Processing data from: {ks_dir}")
+        print(f"Results will be saved to: {save_path}")
+        print(f"Chunk Time Sec is {chunkSizeSec}")
+        print("\nLoading ephys data...")
+    chunkStarts,chunkStops = makeChunkIdxes(raw_data_file= param['raw_data_file'],nChannels=param['nChannels'],ephys_sample_rate = param['ephys_sample_rate'])
+    
+    (
+        spike_times_samples,
+        spike_clusters, # actually spike_templates, but they're the same in bombcell
+        template_waveforms,
+        template_amplitudes,
+        pc_features,
+        pc_features_idx,
+        channel_positions,
+    ) = load_ephys_data(ks_dir)
+
+    
+    if param.get("verbose", False):
+        print(f"Loaded ephys data: {len(np.unique(spike_clusters))} units, {len(spike_times_samples):,} spikes")
+
+    # pre-load peak channels from templates before extracting raw waveforms
+    maxChannels = qm.get_waveform_peak_channel(template_waveforms)
+
+    # Extract or load in raw waveforms
+    if param["raw_data_file"] is not None:
+        # Check if data is compressed and handle accordingly
+        raw_file = param["raw_data_file"]
+        is_compressed = raw_file.endswith('.cbin') if isinstance(raw_file, str) else False
+
+        if is_compressed and not param.get("decompress_data", False):
+            # Compressed data but decompress_data is False - warn and skip raw extraction
+            print("\nWARNING: Raw data file is compressed (.cbin) but decompress_data=False")
+            print(f"    File: {raw_file}")
+            print("    Skipping raw waveform extraction. Set param['decompress_data']=True to enable.")
+            param["extractRaw"] = False
+        elif param.get("decompress_data", False):
+            if param.get("verbose", False):
+                print("\nChecking for compressed data...")
+            from bombcell.extract_raw_waveforms import decompress_data_if_needed
+            param["raw_data_file"] = decompress_data_if_needed(
+                param["raw_data_file"],
+                decompress_data=param["decompress_data"]
+            )
+
+        # Only extract if extractRaw is still True (not disabled due to compressed data)
+        if param.get("extractRaw", True):
+            if param.get("verbose", False):
+                print("\n🔍 Extracting raw waveforms...")
+            (
+            raw_waveforms_full,
+            raw_waveforms_peak_channel,
+            signal_to_noise_ratio,
+            raw_waveforms_id_match,
+            ) = extract_raw_waveforms(
+                param,
+                spike_clusters,
+                spike_times_samples,
+                param["reextractRaw"],
+                save_path,
+                maxChannels,  # Pass template peak channels
+            )
+        else:
+            raw_waveforms_full = None
+            raw_waveforms_peak_channel = None
+            signal_to_noise_ratio = None
+            raw_waveforms_id_match = None
+    else:
+        # No raw data file available - try to load existing waveforms from disk
+        raw_waveforms_file = Path(save_path) / "templates._bc_rawWaveforms.npy"
+        raw_waveforms_peak_channel_file = Path(save_path) / "templates._bc_rawWaveformPeakChannels.npy"
+        raw_waveforms_id_match_file = Path(save_path) / "_bc_rawWaveforms_kilosort_format.npy"
+        snr_noise_file = Path(save_path) / "templates._bc_baselineNoiseAmplitude.npy"
+        snr_noise_idx_file = Path(save_path) / "templates._bc_baselineNoiseAmplitudeIndex.npy"
+
+        if raw_waveforms_file.exists() and raw_waveforms_peak_channel_file.exists():
+            if param.get("verbose", False):
+                print("\n📂 Loading existing raw waveforms (no raw data file available)...")
+            raw_waveforms_full = np.load(raw_waveforms_file)
+            raw_waveforms_peak_channel = np.load(raw_waveforms_peak_channel_file)
+            raw_waveforms_id_match = np.load(raw_waveforms_id_match_file) if raw_waveforms_id_match_file.exists() else None
+
+            # Compute SNR from loaded waveforms if baseline noise exists
+            if snr_noise_file.exists() and snr_noise_idx_file.exists():
+                baseline_noise_all = np.load(snr_noise_file)
+                baseline_noise_idx = np.load(snr_noise_idx_file)
+                unique_clusters = np.unique(spike_clusters)
+                n_clusters = len(unique_clusters)
+                signal_to_noise_ratio = np.zeros(n_clusters)
+                for i, cid in enumerate(unique_clusters):
+                    mask = unique_clusters == cid
+                    cluster_idx = np.where(mask)[0]
+                    peak_channel = raw_waveforms_peak_channel[cluster_idx].astype(int)
+
+                    # Maximum absolute value of the waveform (signal)
+                    peak_waveform = raw_waveforms_full[cluster_idx, peak_channel, :]
+                    signal = np.max(np.abs(np.squeeze(peak_waveform)))
+
+                    # Get baseline noise for this cluster
+                    baseline_mask = baseline_noise_idx == cid
+                    baseline = baseline_noise_all[baseline_mask]
+
+                    # Calculate MAD (noise) - Median Absolute Deviation
+                    noise = np.median(np.abs(baseline - np.median(baseline)))
+
+                    # Calculate SNR
+                    signal_to_noise_ratio[i] = signal / noise
+            else:
+                signal_to_noise_ratio = None
+
+            param["extractRaw"] = False  # Waveforms loaded, not extracted
+        else:
+            raw_waveforms_full = None
+            raw_waveforms_peak_channel = None
+            signal_to_noise_ratio = None
+            raw_waveforms_id_match = None
+            param["extractRaw"] = False  # No waveforms to extract!
+
+    # Remove duplicate spikes
+    if param["removeDuplicateSpikes"]:
+        (
+            unique_templates,
+            empty_unit_idx,
+            spike_times_samples,
+            spike_clusters,
+            template_amplitudes,
+            pc_features,
+            raw_waveforms_full,
+            raw_waveforms_peak_channel,
+            signal_to_noise_ratio,
+            maxChannels,
+        ) = qm.remove_duplicate_spikes(
+            spike_times_samples,
+            spike_clusters,
+            template_amplitudes,
+            maxChannels,
+            save_path,
+            param,
+            pc_features=pc_features,
+            raw_waveforms_full=raw_waveforms_full,
+            raw_waveforms_peak_channel=raw_waveforms_peak_channel,
+            signal_to_noise_ratio=signal_to_noise_ratio,
+        )
+    else:
+        # Use ALL template IDs (0 to n_templates-1), not just units with spikes
+        # This ensures output has rows for all templates, with NaN for units without spikes
+        n_templates = template_waveforms.shape[0]
+        unique_templates = np.arange(n_templates)
+        # Track which units have no spikes (empty units get NaN metrics)
+        units_with_spikes = np.unique(spike_clusters)
+        empty_unit_idx = ~np.isin(unique_templates, units_with_spikes)
+
+    # Divide recording into time chunks
+    spike_times_seconds = spike_times_samples / param["ephys_sample_rate"]
+    if param["computeTimeChunks"]:
+        time_chunks = np.arange(
+            np.min(spike_times_seconds),
+            np.max(spike_times_seconds),
+            param["deltaTimeChunk"],
+        )
+    else:
+        time_chunks = np.array(
+            (np.min(spike_times_seconds), np.max(spike_times_seconds))
+        )
+
+    # unique_templates contains ALL units (including empty ones)
+    # empty_unit_idx indicates which units have 0 spikes
+    param['unique_templates'] = unique_templates
+    param['empty_unit_idx'] = empty_unit_idx
+
+    # Initialize quality metrics dictionary
+    n_units = unique_templates.size
+
+    # Expand signal_to_noise_ratio to all templates (SNR was only computed for units with spikes)
+    if signal_to_noise_ratio is not None:
+        units_with_spikes = np.unique(spike_clusters)
+        snr_full = np.full(n_units, np.nan)
+        for i, uid in enumerate(units_with_spikes):
+            if uid < n_units:  # Only assign if uid is within range
+                snr_full[uid] = signal_to_noise_ratio[i]
+        signal_to_noise_ratio = snr_full
+
+    quality_metrics = create_quality_metrics_dict(n_units, snr=signal_to_noise_ratio)
+    # maxChannels is indexed by template ID (same as unique_templates when no manual curation)
+    quality_metrics["maxChannels"] = maxChannels
+    # Keep full maxChannels in param for template-based operations
+    param['maxChannels_full'] = maxChannels
+    # Store raw_waveforms_id_match for cluster ID-based access (handles gaps in unit IDs)
+    param['raw_waveforms_id_match'] = raw_waveforms_id_match
+
+    # Complete with remaining quality metrics  
+    if param.get("verbose", False):
+        print(f"\n⚙️ Computing quality metrics for {n_units} units...")
+        print("   (Progress bar will appear below)")
+    
+    quality_metrics, times = get_all_quality_metrics(
+        unique_templates,
+        spike_times_seconds,
+        spike_clusters,
+        template_amplitudes,
+        time_chunks,
+        pc_features,
+        pc_features_idx,
+        quality_metrics,
+        raw_waveforms_full,
+        channel_positions,
+        template_waveforms,
+        param,
+        save_path,
+    )
+
+    if param.get("verbose", False):
+        print("\n🏷️ Classifying units (good/MUA/noise/non-soma)...")
+    
+    unit_type, unit_type_string = qm.get_quality_unit_type(
+        param, quality_metrics
+    )  # JF: this should be inside bc.get_all_quality_metrics
+
+    # Override param settings if save_figures is explicitly set
+    if save_figures:
+        param["savePlots"] = True
+        if param.get("plotsSaveDir") is None:
+            param["plotsSaveDir"] = str(Path(save_path) / "bombcell_plots")
+    
+    figures = None
+    if param.get("verbose", False):
+        print("\nGenerating summary plots...")
+    
+    # Call plot_summary_data with return_figures parameter if needed
+    if return_figures:
+        figures = plot_summary_data(quality_metrics, template_waveforms, unit_type, unit_type_string, param, return_figures=True)
+    else:
+        plot_summary_data(quality_metrics, template_waveforms, unit_type, unit_type_string, param)
+
+    if param.get("verbose", False):
+        print("\nSaving results...")
+    
+    save_results(
+        quality_metrics,
+        unit_type_string,
+        unique_templates,
+        param,
+        raw_waveforms_full,
+        raw_waveforms_peak_channel,
+        raw_waveforms_id_match,
+        save_path,
+        ks_dir,
+    )  
+
+    if return_figures and figures is not None:
+        return (
+            quality_metrics,
+            param,
+            unit_type,
+            unit_type_string,
+            figures,
+        )
+    else:
+        return (
+            quality_metrics,
+            param,
+            unit_type,
+            unit_type_string,
+        )
+
 
 def run_bombcell(ks_dir, save_path, param, save_figures=False, return_figures=False):
     """
