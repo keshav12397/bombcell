@@ -1420,7 +1420,8 @@ def presence_ratio(these_spike_times, use_this_time_start, use_this_time_end, pa
     """
 
     presenceRatioBinSize = param["presenceRatioBinSize"]
-
+    if presenceRatioBinSize is None:
+        return 1
     # divide recording into bins
     presence_ratio_bins = np.arange(
         use_this_time_start, use_this_time_end, presenceRatioBinSize

@@ -24,6 +24,8 @@ def load_ephys_data(ephys_path):
         The array which assigns a spike to a cluster
     template_waveforms : ndarray (m_templates, n_time_points, n_channels)
         The array of template waveforms for each templates and channel
+    template_amplitudes : ndarray (n_spikes, )
+        The array of template scaling amplitude thing for each spike 
     pc_features : ndarray (n_spikes, n_features_per_channel, n_pc_features)
         The array giving the PC values for each spike
     pc_feature_idx : ndarray (n_templates, n_pc_features)
@@ -277,6 +279,7 @@ def get_gain_spikeglx(meta_path):
     scaling_factor = Vmax_uV / Imax / gain
 
     return scaling_factor
+    
 
 
 def load_bc_results(bc_path):

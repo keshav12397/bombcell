@@ -188,6 +188,198 @@ def ephys_prop_values(param):
     
     return get_ephys_parameters(ephys_path, raw_file, meta_file)
 
+def compute_all_ephys_propertiesCHUNKED(spike_times_samples,spike_clusters,template_waveforms,param):
+    """
+    Compute all ephys properties for all units, copy pasted w option to 
+    pass in the arrays needed since theyve already been loaded in for the previous part
+    
+    
+    Parameters
+    ----------
+    ephys_path : str
+        Path to ephys data
+    param : dict
+        Parameters dictionary with memory management settings
+    save_path : str
+        Path to save results
+        
+    Returns
+    -------
+    ephys_properties : list
+        List of dictionaries containing all computed properties
+    """
+    import gc
+    
+    
+    # Convert to seconds
+    spike_times = spike_times_samples / param.get('ephys_sample_rate', 30000)
+    
+    # Get unique units
+    unique_units = np.unique(spike_clusters)
+    n_units = len(unique_units)
+    
+    # Initialize properties dictionary
+    ephys_properties = []
+    
+    for i, unit_id in enumerate(unique_units):
+        properties = {
+            # Unit ID 
+            'unit_id': unit_id,
+            # ACG properties
+            'postSpikeSuppression': np.nan,
+            'acg_tau_rise': np.nan,
+            'acg_tau_decay': np.nan,
+            # ISI properties
+            'isi_cv': np.nan,
+            'isi_cv2': np.nan,
+            'isi_skewness': np.nan,
+            'prop_long_isi': np.nan,
+            # Waveform properties
+            'waveform_duration_peak_trough': np.nan,
+            'waveform_half_width': np.nan,
+            'peak_to_trough_ratio': np.nan,
+            'n_peaks': np.nan,
+            'n_troughs': np.nan,
+            # Spike properties
+            'firing_rate_mean': np.nan,
+            'firing_rate_std': np.nan,
+            'fano_factor': np.nan,
+            # MATLAB-compatible names (initialize now, assign later)
+            'postSpikeSuppression_ms': np.nan,
+            'propLongISI': np.nan,
+            'waveformDuration_peakTrough_us': np.nan,
+        }
+        ephys_properties.append(properties)
+    
+    print(f"Computing ephys properties for {n_units} units ...")
+    log_memory_usage("Initial memory", param.get('verbose', True))
+    
+    # Get sampling rate
+    sampling_rate = param.get('ephys_sample_rate', 30000)
+    
+    # Convert spike times to seconds if needed
+    if np.max(spike_times) > 1e6:  # Likely in samples
+        spike_times_sec = spike_times / sampling_rate
+    else:
+        spike_times_sec = spike_times
+    
+    log_memory_usage("After spike time conversion", param.get('verbose', True))
+
+    
+    # Unit-by-unit processing with progress tracking
+    for i, unit_id in enumerate(tqdm(unique_units, desc="Computing ephys properties",disable=True)):
+        
+        # Get spikes for this unit
+        unit_spikes = spike_times_sec[spike_clusters == unit_id]
+        
+        if len(unit_spikes) < param['min_spikes_for_stats']:
+            # Clean up and continue to next unit
+            del unit_spikes
+            gc.collect()
+            continue
+            
+        # Get template for this unit - avoid loading all at once
+        unit_template = template_waveforms[unit_id].copy()  # Copy to avoid memory issues
+
+        
+        # Initialize variables for cleanup
+        acg_props = {}
+        isi_props = {}
+        wf_props = {}
+        spike_props = {}
+        
+        try:
+            # Compute ACG properties
+            acg_props = compute_acg_properties(unit_spikes, param)
+            ephys_properties[i]['postSpikeSuppression'] = acg_props.get('post_spike_suppression_ratio', np.nan)
+            ephys_properties[i]['acg_tau_rise'] = acg_props.get('tau_rise_ms', np.nan)
+            ephys_properties[i]['acg_tau_decay'] = acg_props.get('tau_decay_ms', np.nan)
+            
+            # MATLAB-compatible property names
+            pss_ms = acg_props.get('post_spike_suppression_ms', np.nan)
+            ephys_properties[i]['postSpikeSuppression_ms'] = pss_ms
+            
+            # Clean up ACG computation results immediately
+            del acg_props
+            gc.collect()
+            # Compute ISI properties
+            isi_props = compute_isi_properties(unit_spikes, param)
+            ephys_properties[i]['isi_cv'] = isi_props.get('cv', np.nan)
+            ephys_properties[i]['isi_cv2'] = isi_props.get('cv2', np.nan)
+            ephys_properties[i]['isi_skewness'] = isi_props.get('isi_skewness', np.nan)
+            ephys_properties[i]['prop_long_isi'] = isi_props.get('prop_long_isi', np.nan)
+            ephys_properties[i]['pct_violations'] = isi_props.get('pct_violations', np.nan) ##KS added 
+            # MATLAB-compatible property names
+            ephys_properties[i]['propLongISI'] = isi_props.get('prop_long_isi', np.nan)
+            
+            # Clean up ISI computation results immediately
+            del isi_props
+            gc.collect()
+            
+            # Compute waveform properties
+            wf_props = compute_waveform_properties(unit_template, param, sampling_rate)
+            ephys_properties[i]['waveform_duration_peak_trough'] = wf_props.get('waveform_duration_us', np.nan)
+            ephys_properties[i]['waveform_half_width'] = wf_props.get('half_width_ms', np.nan)
+            ephys_properties[i]['peak_to_trough_ratio'] = wf_props.get('peak_to_trough_ratio', np.nan)
+            
+            # MATLAB-compatible property names (assign AFTER computation)
+            ephys_properties[i]['waveformDuration_peakTrough_us'] = ephys_properties[i]['waveform_duration_peak_trough']
+            ephys_properties[i]['n_peaks'] = wf_props.get('n_peaks', np.nan)
+            ephys_properties[i]['n_troughs'] = wf_props.get('n_troughs', np.nan)
+            
+            # Clean up waveform computation results immediately
+            del wf_props
+            gc.collect()
+            
+            # Compute spike properties
+            spike_props = compute_spike_properties(unit_spikes, param)
+            ephys_properties[i]['firing_rate_mean'] = spike_props.get('mean_firing_rate', np.nan)
+            ephys_properties[i]['firing_rate_std'] = spike_props.get('std_firing_rate', np.nan)
+            ephys_properties[i]['fano_factor'] = spike_props.get('fano_factor', np.nan)
+            
+            # Clean up spike computation results immediately
+            del spike_props
+            gc.collect()
+            
+        except (MemoryError, np.core._exceptions._ArrayMemoryError) as e:
+            print(f"Error processing unit {unit_id}: {e}")
+            print("Skipping this unit and continuing...")
+            # Set all properties to NaN for this unit
+            for key in ephys_properties[i].keys():
+                if key != 'unit_id':
+                    ephys_properties[i][key] = np.nan
+            # Force aggressive cleanup
+            del acg_props, isi_props, wf_props, spike_props
+            gc.collect()
+            gc.collect()  # Double collection for aggressive cleanup
+        except Exception as e:
+            print(f"Unexpected error processing unit {unit_id}: {e}")
+            print("Skipping this unit and continuing...")
+            # Set all properties to NaN for this unit
+            for key in ephys_properties[i].keys():
+                if key != 'unit_id':
+                    ephys_properties[i][key] = np.nan
+            # Clean up variables
+            del acg_props, isi_props, wf_props, spike_props
+            gc.collect()
+        
+        # Immediate cleanup after each unit - CRITICAL for memory management
+        del unit_spikes, unit_template
+        gc.collect()
+        
+        # Memory monitoring every 10 units
+        if (i + 1) % 10 == 0:
+            current_memory = get_memory_usage()
+            
+            # Force additional cleanup if memory is getting high
+            if current_memory > 3000:  # > 3GB
+                gc.collect()
+                gc.collect()  # Double collection for aggressive cleanup
+    
+    print("Ephys properties computation complete!")
+    log_memory_usage("Final memory", param.get('verbose', True))
+    return ephys_properties
+
 
 def compute_all_ephys_properties(ephys_path, param, save_path):
     """
@@ -609,7 +801,8 @@ def compute_isi_properties(spike_times, param):
         'prop_long_isi': np.nan,
         'cv': np.nan,
         'cv2': np.nan,
-        'isi_skewness': np.nan
+        'isi_skewness': np.nan,
+        'pct_violations': np.nan
     }
     
     if len(spike_times) < 2:
@@ -637,6 +830,12 @@ def compute_isi_properties(spike_times, param):
             cv2_values = diff_isis[valid_mask] / mean_isis[valid_mask]
             isi_props['cv2'] = np.mean(cv2_values)
     
+    #percent violations, using refractory period of 1ms
+    tauC_sec  = 0.00001 # censor period in sec- 0.01 ms
+    tauR_sec = 0.001 #refractory period in sec - 1ms  
+    bad_isis = (isis>tauC_sec) & (isis<tauR_sec)
+    isi_props['pct_violations'] = 100 * (bad_isis.sum()/len(isis)) 
+
     return isi_props
 
 

@@ -14,7 +14,7 @@ except ImportError:
     print("Warning: mtscomp not available. Some raw data formats may not be supported.")
 from scipy.signal import detrend
 from scipy.ndimage import gaussian_filter
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 
 # DEBUG FLAG - set to True to enable debug plots
@@ -786,7 +786,7 @@ def extract_raw_waveforms(
                 print("DEBUG_EXIT_AFTER_PLOT is True, exiting early...")
                 return None, None, None, None
 
-        all_waveforms = Parallel(n_jobs=-1, verbose=10, mmap_mode="r", max_nbytes=None)(
+        all_waveforms = Parallel(n_jobs=-1, verbose=0, mmap_mode="r", max_nbytes=None)(
             delayed(process_a_unit)(
                 raw_data,
                 spike_width,
@@ -803,7 +803,7 @@ def extract_raw_waveforms(
                 save_multiple_raw,
                 template_peak_channels[cid] if template_peak_channels is not None and cid < len(template_peak_channels) else None,
             )
-            for i, cid in enumerate(tqdm(unique_clusters, desc="Extracting raw waveforms"))
+            for i, cid in enumerate(tqdm(unique_clusters, desc="Extracting raw waveforms", disable = True))
         )
 
         (raw_waveforms,
@@ -1256,7 +1256,7 @@ def check_extracted_waveforms(raw_waveforms_id_match, raw_waveforms_peak_channel
         clus_spike_times = []
         # Process ALL unit
         bar_description = "Extracting raw waveforms: {percentage:3.0f}%|{bar:10}| {n}/{total} units"
-        for i, idx in tqdm(enumerate(unique_id_new), bar_format=bar_description):
+        for i, idx in tqdm(enumerate(unique_id_new), bar_format=bar_description,disable=True):
             clus_spike_times.append(spike_times_filt[spike_clusters_filt == idx])
             if n_spikes_to_extract < len(clus_spike_times[i]):
                 # -1 so can't index out of region

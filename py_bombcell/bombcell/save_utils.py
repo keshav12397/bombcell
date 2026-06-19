@@ -199,13 +199,6 @@ def save_dict_as_parquet_and_csv(
     save_path = path_handler(save_path)
 
     file_path = str(save_path / file_name)
-    print("\nLengths going into DataFrame:")
-    for k, v in dic.items():
-        try:
-            print(k, len(v), type(v))
-        except TypeError:
-            print(k, "scalar", type(v))
-
     quality_metrics_df = pd.DataFrame.from_dict(dic)
     
     quality_metrics_df.to_parquet(file_path + ".parquet")

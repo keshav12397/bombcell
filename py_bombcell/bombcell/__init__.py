@@ -16,7 +16,7 @@ from . import (
 from .default_parameters import *
 from .extract_raw_waveforms import *
 from .helper_functions import *
-from .helper_functions import run_bombcell_unit_match
+from .helper_functions import run_bombcell_unit_match,run_bombcellCHUNKEDALL
 from .quality_metrics import *
 from .ephys_properties import *
 from .save_utils import *
