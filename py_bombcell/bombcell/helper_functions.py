@@ -14,7 +14,7 @@ import bombcell.quality_metrics as qm
 from bombcell.save_utils import get_metric_keys, save_results
 from bombcell.plot_functions import *
 
-from bombcell.ephys_properties import compute_all_ephys_propertiesCHUNKED,save_ephys_properties,get_ephys_parameters
+from bombcell.ephys_properties import compute_all_ephys_propertiesCHUNKEDPARALLEL,compute_all_ephys_propertiesCHUNKED,save_ephys_properties,get_ephys_parameters
 
 from bombcell.default_parameters import get_default_parameters
 
@@ -58,7 +58,7 @@ def makeBothParams(kilosortDir:Path):
     bcParams["tauC"] = 0.0001    # 0.2ms ignore- same as ks         
     bcParams['computeTimeChunks'] = False
     bcParams['minNumSpikes'] = 100
-    
+
 
 
 

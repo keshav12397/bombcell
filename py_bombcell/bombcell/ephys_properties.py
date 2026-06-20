@@ -8,6 +8,7 @@ import gc
 from pathlib import Path
 from tqdm.auto import tqdm
 from .ccg_fast import acg as compute_acg_fast
+from joblib import Parallel,delayed
 
 __all__ = [
     'run_all_ephys_properties',
@@ -175,7 +176,6 @@ def get_ephys_parameters(ephys_path, raw_file=None, meta_file=None):
     
     return ephys_param
 
-
 def ephys_prop_values(param):
     """
     DEPRECATED: Use get_ephys_parameters() instead
@@ -187,6 +187,149 @@ def ephys_prop_values(param):
     meta_file = param.get('ephys_meta_file', None)
     
     return get_ephys_parameters(ephys_path, raw_file, meta_file)
+
+def init_ephys_properties(unit_id):
+    return {
+        "unit_id": unit_id,
+
+        # ACG properties
+        "postSpikeSuppression": np.nan,
+        "acg_tau_rise": np.nan,
+        "acg_tau_decay": np.nan,
+
+        # ISI properties
+        "isi_cv": np.nan,
+        "isi_cv2": np.nan,
+        "isi_skewness": np.nan,
+        "prop_long_isi": np.nan,
+        "pct_violations": np.nan,
+
+        # Waveform properties
+        "waveform_duration_peak_trough": np.nan,
+        "waveform_half_width": np.nan,
+        "peak_to_trough_ratio": np.nan,
+        "n_peaks": np.nan,
+        "n_troughs": np.nan,
+
+        # Spike properties
+        "firing_rate_mean": np.nan,
+        "firing_rate_std": np.nan,
+        "fano_factor": np.nan,
+
+        # MATLAB-compatible names
+        "postSpikeSuppression_ms": np.nan,
+        "propLongISI": np.nan,
+        "waveformDuration_peakTrough_us": np.nan,
+    }
+
+def compute_one_ephys_unit(unit_id, unit_spikes, template_waveforms, param, sampling_rate):
+    props = init_ephys_properties(unit_id)
+    print('starting unit#', unit_id)
+    if len(unit_spikes) < param["min_spikes_for_stats"]:
+        return props
+
+    try:
+        unit_template = template_waveforms[int(unit_id)].copy()
+
+        # ACG
+        acg_props = compute_acg_properties(unit_spikes, param)
+        props["postSpikeSuppression"] = acg_props.get("post_spike_suppression_ratio", np.nan)
+        props["acg_tau_rise"] = acg_props.get("tau_rise_ms", np.nan)
+        props["acg_tau_decay"] = acg_props.get("tau_decay_ms", np.nan)
+        props["postSpikeSuppression_ms"] = acg_props.get("post_spike_suppression_ms", np.nan)
+
+        # ISI
+        isi_props = compute_isi_properties(unit_spikes, param)
+        props["isi_cv"] = isi_props.get("cv", np.nan)
+        props["isi_cv2"] = isi_props.get("cv2", np.nan)
+        props["isi_skewness"] = isi_props.get("isi_skewness", np.nan)
+        props["prop_long_isi"] = isi_props.get("prop_long_isi", np.nan)
+        props["pct_violations"] = isi_props.get("pct_violations", np.nan)
+        props["propLongISI"] = isi_props.get("prop_long_isi", np.nan)
+
+        # Waveform
+        wf_props = compute_waveform_properties(unit_template, param, sampling_rate)
+        props["waveform_duration_peak_trough"] = wf_props.get("waveform_duration_us", np.nan)
+        props["waveform_half_width"] = wf_props.get("half_width_ms", np.nan)
+        props["peak_to_trough_ratio"] = wf_props.get("peak_to_trough_ratio", np.nan)
+        props["waveformDuration_peakTrough_us"] = props["waveform_duration_peak_trough"]
+        props["n_peaks"] = wf_props.get("n_peaks", np.nan)
+        props["n_troughs"] = wf_props.get("n_troughs", np.nan)
+
+        # Spike stats
+        spike_props = compute_spike_properties(unit_spikes, param)
+        props["firing_rate_mean"] = spike_props.get("mean_firing_rate", np.nan)
+        props["firing_rate_std"] = spike_props.get("std_firing_rate", np.nan)
+        props["fano_factor"] = spike_props.get("fano_factor", np.nan)
+
+    except Exception as e:
+        print(f"Error processing unit {unit_id}: {e}")
+
+    return props
+
+def compute_all_ephys_propertiesCHUNKEDPARALLEL(spike_times_samples,spike_clusters,template_waveforms,param,n_jobs,prefer='threads'):
+    """
+    Compute all ephys properties for all units, copy pasted w option to 
+    pass in the arrays needed since theyve already been loaded in for the previous part. now parallel per unit 
+    
+    
+    Parameters
+    ----------
+    ephys_path : str
+        Path to ephys data
+    param : dict
+        Parameters dictionary with memory management settings
+    save_path : str
+        Path to save results
+        
+    Returns
+    -------
+    ephys_properties : list
+        List of dictionaries containing all computed properties
+    """
+    import gc
+    
+    
+    # Convert to seconds
+    sampling_rate = param.get('ephys_sample_rate', 30000)
+    spike_times = spike_times_samples / sampling_rate
+    
+    # Get unique units
+    unique_units = np.unique(spike_clusters)
+    n_units = len(unique_units)
+
+    ##set up spiketimes ordered by cluster to set up for parallel 
+    order = np.argsort(spike_clusters, kind="stable")
+    clusters_sorted = spike_clusters[order]
+    times_sorted = spike_times[order]
+    unique_units, starts, counts = np.unique(
+        clusters_sorted,
+        return_index=True,
+        return_counts=True,
+    )
+    print(f"Computing ephys properties for {len(unique_units)} units ... In parallel!")
+
+    ephys_properties = Parallel(
+        n_jobs=n_jobs,
+        prefer=prefer,
+        verbose=0,
+    )(
+        delayed(compute_one_ephys_unit)(
+            unit_id,
+            times_sorted[start:start + count],
+            template_waveforms,
+            param,
+            sampling_rate,
+        )
+        for unit_id, start, count in tqdm(
+            zip(unique_units, starts, counts),
+            total=len(unique_units),
+            desc="Computing ephys properties",
+        )
+    )
+
+    return ephys_properties
+  
 
 def compute_all_ephys_propertiesCHUNKED(spike_times_samples,spike_clusters,template_waveforms,param):
     """
