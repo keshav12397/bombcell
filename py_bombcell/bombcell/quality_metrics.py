@@ -2296,8 +2296,7 @@ def get_raw_amplitude(this_raw_waveform, gain_to_uV, peak_channel=None):
         raw_amplitude = np.nan
 
     return raw_amplitude
-
-
+    
 def get_quality_unit_type(param, quality_metrics):
     """
     Classifies neural units based on quality metrics.

@@ -59,6 +59,11 @@ def makeBothParams(kilosortDir:Path):
     bcParams['computeTimeChunks'] = False
     bcParams['minNumSpikes'] = 100
 
+    ##KS modified
+    bcParams['maxRPVviolations']= 1
+    bcParams['maxPercSpikesMissing']  = 10
+    bcParams[ 'minPresenceRatio'] = 0
+
 
 
 
@@ -1181,7 +1186,7 @@ def makeChunkIdxes(raw_data_file,ephys_sample_rate,nChannels,chunkSizeSec):
 
     return chunkStarts,chunkStops
 
-def run_bombcellCHUNKEDALL(ks_dir, save_pathRun, param, ephysParam, chunkSizeSec = 600,save_figures=False, return_figures=False):
+def run_bombcellCHUNKEDALL(ks_dir, save_pathRun, param, ephysParam, chunkSizeSec = 600,calcEphys = False,save_figures=False, return_figures=False):
     """
     KS modifed  the main function to now move in chunks along the recording 
 
@@ -1463,10 +1468,10 @@ def run_bombcellCHUNKEDALL(ks_dir, save_pathRun, param, ephysParam, chunkSizeSec
             ks_dir,
         )  
         print('Quality Metrics Saved')
-    
-        ephys_properties = compute_all_ephys_propertiesCHUNKED(spike_times_samples,spike_clusters,template_waveforms,ephysParam)
-        save_ephys_properties(ephys_properties,save_path,ephysParam)
-        print('ephys Params saved ')
+        if calcEphys:
+            ephys_properties = compute_all_ephys_propertiesCHUNKED(spike_times_samples,spike_clusters,template_waveforms,ephysParam)
+            save_ephys_properties(ephys_properties,save_path,ephysParam)
+            print('ephys Params saved ')
 
 
 def run_bombcell(ks_dir, save_path, param, save_figures=False, return_figures=False):
