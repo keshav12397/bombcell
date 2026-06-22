@@ -376,6 +376,7 @@ def process_a_unit(
 
     # Save average waveforms for unitmatch
     # create the waveforms now, save later
+    print(save_multiple_raw)
     if save_multiple_raw:
         # Create separate spike map for UnitMatch with its own detrending control
         unitmatch_spike_map = np.full(
@@ -416,11 +417,11 @@ def process_a_unit(
         avg_waveforms = np.full((spike_width, n_channels - n_sync_channels, 2), np.nan)
         avg_waveforms[:, :, 0] = np.nanmedian(tmp_spike_map[:, :, :UM_CV_limit], axis=-1)
         avg_waveforms[:, :, 1] = np.nanmedian(tmp_spike_map[:, :, UM_CV_limit:], axis=-1)
-
         np.save(
             save_directory / f"Unit{cid}_RawSpikes.npy",
             avg_waveforms[:, :, :],
         )
+
 
     # get average, baseline-subtracted waveforms, Not smoothing as a mandatory processing step!
     spike_map_mean = np.nanmean(spike_map, axis=2)

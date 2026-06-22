@@ -29,7 +29,7 @@ def makeBothParams(kilosortDir:Path):
     realbinPath = kilosortDir.parent/dat_path.name
     print(realbinPath)
     gain_to_uV = 3.662109375 ##hardcoded for NPX2.0
-    nRawSpikesToExtract = 75
+    nRawSpikesToExtract = 50
     
     ###SET UP bc param things 
     bcParams  = get_default_parameters(str(kilosortDir), 
@@ -41,7 +41,7 @@ def makeBothParams(kilosortDir:Path):
     bcParams['verbose'] = False
     bcParams['nChannels'] = n_channels_dat 
     bcParams['nSyncChannels'] = 0
-    bcParams['reextractRaw']= False
+    bcParams['reextractRaw']= True
     bcParams[ 'nRawSpikesToExtract'] = nRawSpikesToExtract
     bcParams["saveMultipleRaw"] = True
     bcParams['removeDuplicateSpikes']= False
@@ -1992,3 +1992,77 @@ def make_qm_table(quality_metrics, param, unit_type_string):
         qm_table_list, qm_table_names
     ).T
     return qm_table
+
+
+def combineAndScoreBombChunks(bombdir):
+    '''
+    Combines all ephys and quality metric dataframes and scores for how many chunks they pass and writes to a new parquet. combines all waveforms too and writes to a new NPY.
+    Use for input into NWB 
+    '''
+    chunkTimes = np.load(bombdir/'chunkIDXs.npy')
+    chunkOffsets =chunkTimes[:,1]
+
+    allchunks = np.sort([int(x.split('_')[-1]) for x in os.listdir(bombdir) if 'chunk_' in x])
+    assert np.all(np.diff(allchunks) == 1), 'chunks not increasing by 1!'
+    tempread  = pd.read_parquet(bombdir/'chunk_0/templates._bc_qMetrics.parquet') ## TODO fix bc this will fail if i ever do non chunked mode 
+    
+    nUnits = len(tempread)
+    nChunks = len(allchunks)
+
+    paramsinfo = pd.read_parquet(bombdir/'chunk_0/_bc_parameters._bc_qMetrics.parquet')
+    nRawSpikes = int(paramsinfo['nRawSpikesToExtract'].iloc[0])    
+    spikeWidth = int(paramsinfo['spike_width'].iloc[0])
+    nChans = int(paramsinfo['n_channels_rec'].iloc[0])
+
+    holdWFarr = np.full((nChunks,nUnits,spikeWidth,nChans,nRawSpikes),np.nan,dtype=np.float64) ##make array to put into waveforms (nChunks,nUnit,SpikeWidth, nChan,nSpikes) this is a ridic array
+
+    holdallDFs = []
+    for thing in allchunks:
+        ##get Dataframes First
+        usedir  =  bombdir/f'chunk_{thing}'
+        qm_par = usedir/'templates._bc_qMetrics.parquet'
+        qm_df = pd.read_parquet(qm_par)
+        ephys_par = usedir/'templates._bc_ephysProperties.parquet'
+        ephys_df = pd.read_parquet(ephys_par)
+        ephys_df.rename(columns={'unit_id':'phy_clusterID'},inplace=True)
+        totaldf = pd.merge(
+            qm_df,
+            ephys_df,
+            on="phy_clusterID",
+            how="left",
+            )
+        holdallDFs.append(totaldf)
+        allunits = totaldf['phy_clusterID'].tolist()
+
+        ##now get Waveforms 
+        for unitIDX,unit in enumerate(allunits):
+            wfpath = usedir/f'RawWaveforms/Unit{unit}_RawSpikes.npy'
+            if not wfpath.exists():
+                continue ## skip if no spikes from this unit 
+            else:
+                wfArr = np.load(wfpath)
+                nspikes = wfArr.shape[-1]
+                holdWFarr[thing,unitIDX,:,:,:nspikes] = wfArr
+
+    ##combine dataframes and score for chunks 
+    cattedDf = pd.concat(holdallDFs,axis = 1, keys=[f'chunkOffset_{x}' for x  in chunkOffsets])
+    chunkCol = cattedDf.columns.get_level_values(0).unique()
+    bcClass =np.column_stack([cattedDf[x]['bc_unitType'].values for x in chunkCol])
+    pctViol = np.column_stack([cattedDf[x]['pct_violations'].values for x in chunkCol])
+    ##Metrics used to evaluate!
+    boolPassArr = (bcClass == 'GOOD') & (pctViol<1)
+    passPct = boolPassArr.sum(axis=1)/nChunks  # pct of chunks passed 
+    
+    
+    diffThresh = [0.8,0.9,1.0]
+    diffPasses  = [np.where(passPct >= x)[0] for x in diffThresh]
+    
+    for t,p in zip(diffThresh,diffPasses):
+        falseArr = np.zeros(nUnits)
+        falseArr[p] = 1
+        cattedDf[('PassPctThresh'),(t)] = falseArr
+
+    cattedDf.to_pickle(bombdir/'combinedBombOut.pkl')
+    np.save(bombdir/'combinedBombWFs.npy',holdWFarr)
+
+    return cattedDf,holdWFarr
